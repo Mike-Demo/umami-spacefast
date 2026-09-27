@@ -1,0 +1,1 @@
+{"devDependencies":{"esbuild":"^0.25.0","typescript":"^5.6.0"},"name":"lite-analytics","private":true,"scripts":{"build":"esbuild src/worker.ts --bundle --format=esm --platform=neutral --target=es2022 --outfile=worker.js --minify","test":"node --test test/"},"type":"module","version":"1.0.0"}
