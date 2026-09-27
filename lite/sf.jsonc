@@ -1,0 +1,1 @@
+{"$schema":"https://spacefast.com/schemas/sf.json","name":"lite-analytics","runtime":{"database":true,"entry":"worker.js","kind":"functions"}}
