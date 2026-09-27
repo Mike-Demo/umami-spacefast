@@ -230,6 +230,12 @@ function fmt(n: number): string {
   return n.toLocaleString('en-US');
 }
 
+// Session query param, appended to every dashboard link/form so auth survives
+// without cookies.
+function sq(token: string): string {
+  return `s=${encodeURIComponent(token)}`;
+}
+
 function barChart(series: SeriesPoint[]): string {
   if (!series.length) return '<p class="muted">No data yet.</p>';
   const W = 720;
@@ -270,42 +276,45 @@ export function setupNeededPage(): string {
   );
 }
 
-export function websiteListPage(websites: Record<string, any>[]): string {
+export function websiteListPage(websites: Record<string, any>[], token: string): string {
   const rows =
     websites.length === 0
       ? '<p class="muted">No websites yet. Add one below to get a tracking ID.</p>'
       : `<table><tr><th>Name</th><th>Domain</th><th></th></tr>${websites
           .map(
             w =>
-              `<tr><td>${esc(w.name)}</td><td>${esc(w.domain)}</td><td><a href="/w/${esc(w.id)}">Open</a></td></tr>`,
+              `<tr><td>${esc(w.name)}</td><td>${esc(w.domain)}</td><td><a href="/w/${esc(w.id)}?${sq(token)}">Open</a></td></tr>`,
           )
           .join('')}</table>`;
   return layout(
     'Websites',
     `<div class="panel"><h2>Websites</h2>${rows}</div>
     <div class="panel"><h2>Add website</h2>
-      <form method="post" action="/api/websites" class="inline">
+      <form method="post" action="/api/websites?${sq(token)}" class="inline">
         <input name="name" placeholder="Name" required maxlength="100">
         <input name="domain" placeholder="example.com" maxlength="500">
         <button type="submit">Add</button>
       </form></div>
     <p><a href="/logout">Sign out</a></p>`,
-    `<a href="/" class="on">Websites</a>`,
+    `<a href="/?${sq(token)}" class="on">Websites</a>`,
   );
 }
 
-export function overviewPage(opts: {
-  website: Record<string, any>;
-  websites: Record<string, any>[];
-  range: RangeKey;
-  baseUrl: string;
-  stats: Stats;
-  series: SeriesPoint[];
-  pages: Record<string, any>[];
-  referrers: Record<string, any>[];
-  events: Record<string, any>[];
-  realtime: { visitors: number; rows: Record<string, any>[] };
-}): string {
+export function overviewPage(
+  opts: {
+    website: Record<string, any>;
+    websites: Record<string, any>[];
+    range: RangeKey;
+    baseUrl: string;
+    stats: Stats;
+    series: SeriesPoint[];
+    pages: Record<string, any>[];
+    referrers: Record<string, any>[];
+    events: Record<string, any>[];
+    realtime: { visitors: number; rows: Record<string, any>[] };
+  },
+  token: string,
+): string {
   const { website, websites, range, baseUrl, stats, series, pages, referrers, events, realtime } =
     opts;
   const bounceRate =
@@ -314,7 +323,7 @@ export function overviewPage(opts: {
     .map(w => `<option value="${esc(w.id)}"${w.id === website.id ? ' selected' : ''}>${esc(w.name)}</option>`)
     .join('');
   const rangeLink = (r: RangeKey, label: string) =>
-    `<a href="/w/${esc(website.id)}?range=${r}" class="${range === r ? 'on' : ''}">${label}</a>`;
+    `<a href="/w/${esc(website.id)}?range=${r}&${sq(token)}" class="${range === r ? 'on' : ''}">${label}</a>`;
 
   const pageRows =
     pages.length === 0
@@ -355,7 +364,7 @@ export function overviewPage(opts: {
 
   return layout(
     website.name,
-    `<form class="inline" style="margin-bottom:12px" onchange="location='/w/'+this.site.value+'?range=${range}'">
+    `<form class="inline" style="margin-bottom:12px" onchange="location='/w/'+this.site.value+'?range=${range}&${sq(token)}'">
        <select name="site">${siteOptions}</select>
        <span class="range">${rangeLink('24h', '24H')}${rangeLink('7d', '7D')}${rangeLink('30d', '30D')}</span>
      </form>
@@ -381,7 +390,7 @@ export function overviewPage(opts: {
        <p class="muted">Add this to every page of <strong>${esc(website.name)}</strong>:</p>
        <pre class="snippet">&lt;script defer src="${esc(baseUrl)}/tracker.js" data-website-id="${esc(website.id)}"&gt;&lt;/script&gt;</pre>
        <p class="muted">Custom events: <code>lite.track('signup', { plan: 'pro' })</code></p></div>
-     <p><a href="/">All websites</a> · <a href="/logout">Sign out</a></p>`,
-    `<a href="/">Websites</a>`,
+     <p><a href="/?${sq(token)}">All websites</a> · <a href="/logout">Sign out</a></p>`,
+    `<a href="/?${sq(token)}">Websites</a>`,
   );
 }

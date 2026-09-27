@@ -42,7 +42,7 @@ async function pbkdf2Hex(password: string, saltHex: string): Promise<string> {
   return [...new Uint8Array(bits)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-function timingSafeEqual(a: string, b: string): boolean {
+export function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
@@ -69,7 +69,27 @@ export async function checkSession(env: Env, cookieHeader: string | null): Promi
   if (!authConfigured(env)) return false;
   const m = /(?:^|;\s*)lite_session=([^;]+)/.exec(cookieHeader ?? '');
   if (!m) return false;
-  const [expStr, sig] = decodeURIComponent(m[1]).split('.');
+  return checkSessionToken(env, decodeURIComponent(m[1]));
+}
+
+// Session token from cookie (primary) or ?s= query param (fallback for
+// environments where Set-Cookie is stripped). The token itself is URL-safe
+// (expiry + hex HMAC), but callers should still encode it when embedding.
+export function getSessionToken(req: Request): string | null {
+  const cookieHeader = req.headers.get('cookie');
+  const m = /(?:^|;\s*)lite_session=([^;]+)/.exec(cookieHeader ?? '');
+  if (m) return decodeURIComponent(m[1]);
+  try {
+    const s = new URL(req.url).searchParams.get('s');
+    return s || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function checkSessionToken(env: Env, token: string | null): Promise<boolean> {
+  if (!authConfigured(env) || !token) return false;
+  const [expStr, sig] = token.split('.');
   const exp = parseInt(expStr, 10);
   if (!expStr || !sig || Number.isNaN(exp) || exp < Math.floor(Date.now() / 1000)) return false;
   const expected = await hmacHex(env.ADMIN_SECRET!, expStr);

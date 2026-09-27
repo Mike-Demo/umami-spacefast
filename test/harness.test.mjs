@@ -203,7 +203,7 @@ function makeDb() {
       };
       return stmt;
     },
-    exec: async () => ({}),
+    exec: async sql => { db._execCalls = db._execCalls || []; db._execCalls.push(sql); return {}; },
   };
   return db;
 }
@@ -219,7 +219,14 @@ async function pbkdf2(password) {
 }
 
 const PASSWORD_HASH = await pbkdf2('test-password-123');
-const env = { DB: makeDb(), ADMIN_PASSWORD_HASH: PASSWORD_HASH, ADMIN_SALT: SALT, ADMIN_SECRET: SECRET };
+const env = {
+  DB: makeDb(),
+  ADMIN_PASSWORD_HASH: PASSWORD_HASH,
+  ADMIN_SALT: SALT,
+  ADMIN_SECRET: SECRET,
+  SETUP_TOKEN: 'setup-token-abc',
+  CRON_SECRET: 'cron-secret-xyz',
+};
 
 const call = (path, opts = {}) =>
   worker.fetch(new Request(`https://x.test${path}`, opts), env);
@@ -247,7 +254,8 @@ test('collect rejects unknown website', async () => {
 });
 
 let websiteId;
-test('login + create website', async () => {
+let sessionToken;
+test('login + create website (url-token session)', async () => {
   let r = await call('/login');
   assert.match(await r.text(), /Sign in/);
   r = await call('/login', {
@@ -262,15 +270,30 @@ test('login + create website', async () => {
     body: 'password=test-password-123',
   });
   assert.equal(r.status, 303);
-  const cookie = r.headers.get('set-cookie');
-  assert.match(cookie, /lite_session=/);
-  env._cookie = cookie.split(';')[0];
+  const location = r.headers.get('location');
+  assert.match(location, /^\/\?s=/);
+  sessionToken = new URL(location, 'https://x.test').searchParams.get('s');
+  assert.ok(sessionToken);
+  // cookie is still set as a bonus where the edge preserves it
+  assert.match(r.headers.get('set-cookie') ?? '', /lite_session=/);
 
   const authed = (path, opts = {}) => {
-    opts.headers = { ...(opts.headers || {}), cookie: env._cookie };
-    return call(path, opts);
+    const sep = path.includes('?') ? '&' : '?';
+    return call(`${path}${sep}s=${encodeURIComponent(sessionToken)}`, opts);
   };
   env._authed = authed;
+
+  // unauthenticated dashboard access redirects to login
+  r = await call('/');
+  assert.equal(r.status, 303);
+  assert.equal(r.headers.get('location'), '/login');
+  // bad token also redirects
+  r = await call('/?s=bogus');
+  assert.equal(r.status, 303);
+
+  r = await authed('/');
+  assert.equal(r.status, 200);
+  assert.match(await r.text(), /Add website/);
 
   r = await authed('/api/websites', {
     method: 'POST',
@@ -278,8 +301,20 @@ test('login + create website', async () => {
     body: 'name=Test+Site&domain=test.example.com',
   });
   assert.equal(r.status, 303);
-  websiteId = r.headers.get('location').split('/w/')[1];
+  websiteId = new URL(r.headers.get('location'), 'https://x.test').pathname.split('/w/')[1];
   assert.match(websiteId, /^[0-9a-f-]{36}$/);
+  assert.match(r.headers.get('location'), /[?&]s=/);
+});
+
+test('cookie session still works where preserved', async () => {
+  const r = await call('/login', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'password=test-password-123',
+  });
+  const cookie = (r.headers.get('set-cookie') ?? '').split(';')[0];
+  const r2 = await call('/', { headers: { cookie } });
+  assert.equal(r2.status, 200);
 });
 
 test('collect pageview + event, privacy scrubbing', async () => {
@@ -350,6 +385,9 @@ test('dashboard renders stats', async () => {
   assert.match(html, /<div class="v">1<\/div><div class="l">Pageviews<\/div>/);
   assert.match(html, /<div class="v">1<\/div><div class="l">Visitors<\/div>/);
   assert.match(html, /tracker\.js/);
+  // session token is threaded through dashboard links
+  assert.ok(html.includes(`?range=7d&s=${encodeURIComponent(sessionToken)}`));
+  assert.ok(html.includes(`href="/?s=${encodeURIComponent(sessionToken)}"`));
 });
 
 test('retention deletes old rows', async () => {
@@ -362,6 +400,37 @@ test('retention deletes old rows', async () => {
   assert.deepEqual(await r.json(), { ok: true, days: 365 });
   assert.ok(!env.DB.tables.website_event.some(e => e.event_id === 'old'));
   assert.equal(env.DB.tables.website_event.length, 2);
+});
+
+test('migrate endpoint is token-gated and runs schema', async () => {
+  let r = await call('/api/admin/migrate');
+  assert.equal(r.status, 403);
+  r = await call('/api/admin/migrate?token=wrong');
+  assert.equal(r.status, 403);
+  r = await call('/api/admin/migrate/setup-token-abc');
+  assert.equal(r.status, 200);
+  const body = await r.json();
+  assert.equal(body.ok, true);
+  assert.equal(body.applied.length, 4);
+  const execCalls = env.DB._execCalls;
+  assert.equal(execCalls.length, 4);
+  assert.ok(execCalls[0].toLowerCase().includes('create table if not exists website'));
+  assert.ok(execCalls[3].toLowerCase().includes('create table if not exists event_data'));
+});
+
+test('cron retention is bearer-gated and prunes', async () => {
+  env.DB.tables.website_event.push({
+    event_id: 'old2', website_id: websiteId ?? 'none', session_id: 's', visit_id: 'v',
+    created_at: '2020-01-01 00:00:00', url_path: '/old2', event_type: 1,
+  });
+  let r = await call('/api/cron/retention');
+  assert.equal(r.status, 403);
+  r = await call('/api/cron/retention', { headers: { authorization: 'Bearer wrong' } });
+  assert.equal(r.status, 403);
+  r = await call('/api/cron/retention', { headers: { authorization: 'Bearer cron-secret-xyz' } });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { ok: true, days: 365 });
+  assert.ok(!env.DB.tables.website_event.some(e => e.event_id === 'old2'));
 });
 
 test('logout clears session', async () => {
